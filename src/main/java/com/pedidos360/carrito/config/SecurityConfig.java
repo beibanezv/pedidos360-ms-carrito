@@ -6,6 +6,7 @@ import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -19,6 +20,7 @@ import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
   @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri:}")
@@ -31,9 +33,8 @@ public class SecurityConfig {
         .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/actuator/**").permitAll()
-            // carrito es privado: requiere JWT + scope o rol (ejemplo AGENTS.md: Cliente/Admin, Carrito.ReadWrite)
-            // SIMPLIFICADO: si tu tenant usa otros nombres, cambia hasAnyAuthority aquí
-            .requestMatchers("/carrito/**").hasAnyAuthority("SCOPE_Carrito.ReadWrite", "ROLE_Cliente", "ROLE_Admin")
+            // Todos los endpoints requieren JWT; el scope se valida con @PreAuthorize en escritura
+            .requestMatchers("/carrito/**").authenticated()
             .anyRequest().authenticated()
         )
         .oauth2ResourceServer(oauth2 -> oauth2
