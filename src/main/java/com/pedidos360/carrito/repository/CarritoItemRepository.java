@@ -7,6 +7,6 @@ import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface CarritoItemRepository extends JpaRepository<CarritoItem, UUID> {
-  List<CarritoItem> findByUserId(String userId);
-  Optional<CarritoItem> findByIdAndUserId(UUID id, String userId);
+  List<CarritoItem> findByCarritoId(UUID carritoId);
+  Optional<CarritoItem> findByIdAndCarritoId(UUID id, UUID carritoId);
 }

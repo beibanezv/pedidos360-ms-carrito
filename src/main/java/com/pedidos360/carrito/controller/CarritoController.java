@@ -1,12 +1,17 @@
 package com.pedidos360.carrito.controller;
 
+import com.pedidos360.carrito.model.Carrito;
 import com.pedidos360.carrito.model.CarritoItem;
 import com.pedidos360.carrito.repository.CarritoItemRepository;
+import com.pedidos360.carrito.repository.CarritoRepository;
 import jakarta.validation.Valid;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -23,65 +28,100 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/carrito")
 public class CarritoController {
 
-  private final CarritoItemRepository repository;
+  private final CarritoRepository carritoRepository;
+  private final CarritoItemRepository itemRepository;
 
-  public CarritoController(CarritoItemRepository repository) {
-    this.repository = repository;
+  public CarritoController(CarritoRepository carritoRepository, CarritoItemRepository itemRepository) {
+    this.carritoRepository = carritoRepository;
+    this.itemRepository = itemRepository;
   }
 
   private String userIdFrom(Jwt jwt) {
     if (jwt == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token requerido");
-    // Azure AD: oid es estable, sub es fallback
     String oid = jwt.getClaimAsString("oid");
     if (oid != null && !oid.isBlank()) return oid;
     String sub = jwt.getClaimAsString("sub");
     if (sub != null && !sub.isBlank()) return sub;
-    // fallback para tests con jwt() mock sin oid/sub
     String subject = jwt.getSubject();
     if (subject != null && !subject.isBlank()) return subject;
     throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token sin sub/oid");
   }
 
-  @GetMapping
-  public List<CarritoItem> listar(@AuthenticationPrincipal Jwt jwt) {
-    String userId = userIdFrom(jwt);
-    return repository.findByUserId(userId);
+  private Carrito getOrCreateCarrito(String usuarioId) {
+    return carritoRepository.findByUsuarioId(usuarioId)
+        .orElseGet(() -> carritoRepository.save(new Carrito(usuarioId)));
   }
 
-  @PostMapping
-  public ResponseEntity<CarritoItem> agregar(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CarritoItem item) {
-    String userId = userIdFrom(jwt);
-    item.setId(null);
-    item.setUserId(userId);
-    CarritoItem guardado = repository.save(item);
+  // Todos requieren JWT (ver SecurityConfig). Escritura además requiere scope.
+  @GetMapping
+  public Map<String, Object> obtenerCarrito(@AuthenticationPrincipal Jwt jwt) {
+    String usuarioId = userIdFrom(jwt);
+    Carrito carrito = getOrCreateCarrito(usuarioId);
+    List<CarritoItem> items = itemRepository.findByCarritoId(carrito.getId());
+    Map<String, Object> resp = new HashMap<>();
+    resp.put("id", carrito.getId());
+    resp.put("usuarioId", carrito.getUsuarioId());
+    resp.put("createdAt", carrito.getCreatedAt());
+    resp.put("items", items);
+    return resp;
+  }
+
+  @PostMapping("/items")
+  @PreAuthorize("hasAuthority('SCOPE_Carrito.ReadWrite') or hasRole('Cliente') or hasRole('Admin')")
+  public ResponseEntity<CarritoItem> agregarItem(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CarritoItem body) {
+    // SIMPLIFICADO: scope validado via @PreAuthorize (ej. Carrito.ReadWrite). Alternativa: hasAuthority en filterChain.
+    String usuarioId = userIdFrom(jwt);
+    Carrito carrito = getOrCreateCarrito(usuarioId);
+    body.setId(null);
+    body.setCarritoId(carrito.getId());
+    CarritoItem guardado = itemRepository.save(body);
     return ResponseEntity.status(HttpStatus.CREATED).body(guardado);
   }
 
-  @PutMapping("/{id}")
-  public CarritoItem actualizar(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID id, @Valid @RequestBody CarritoItem body) {
-    String userId = userIdFrom(jwt);
-    CarritoItem existente = repository.findByIdAndUserId(id, userId)
+  @PutMapping("/items/{id}")
+  @PreAuthorize("hasAuthority('SCOPE_Carrito.ReadWrite') or hasRole('Cliente') or hasRole('Admin')")
+  public CarritoItem actualizarItem(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID id, @Valid @RequestBody CarritoItem body) {
+    String usuarioId = userIdFrom(jwt);
+    Carrito carrito = getOrCreateCarrito(usuarioId);
+    CarritoItem existente = itemRepository.findByIdAndCarritoId(id, carrito.getId())
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item no encontrado"));
     existente.setCantidad(body.getCantidad());
-    if (body.getPrecioClp() != null) existente.setPrecioClp(body.getPrecioClp());
+    if (body.getPrecioUnitarioClp() != null) existente.setPrecioUnitarioClp(body.getPrecioUnitarioClp());
     if (body.getProductoId() != null) existente.setProductoId(body.getProductoId());
-    return repository.save(existente);
+    return itemRepository.save(existente);
   }
 
-  @DeleteMapping("/{id}")
-  public ResponseEntity<Void> eliminar(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID id) {
-    String userId = userIdFrom(jwt);
-    CarritoItem existente = repository.findByIdAndUserId(id, userId)
+  @DeleteMapping("/items/{id}")
+  @PreAuthorize("hasAuthority('SCOPE_Carrito.ReadWrite') or hasRole('Cliente') or hasRole('Admin')")
+  public ResponseEntity<Void> eliminarItem(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID id) {
+    String usuarioId = userIdFrom(jwt);
+    Carrito carrito = carritoRepository.findByUsuarioId(usuarioId)
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Carrito no encontrado"));
+    CarritoItem existente = itemRepository.findByIdAndCarritoId(id, carrito.getId())
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item no encontrado"));
-    repository.delete(existente);
+    itemRepository.delete(existente);
     return ResponseEntity.noContent().build();
   }
 
-  @DeleteMapping
-  public ResponseEntity<Void> vaciar(@AuthenticationPrincipal Jwt jwt) {
-    String userId = userIdFrom(jwt);
-    List<CarritoItem> items = repository.findByUserId(userId);
-    repository.deleteAll(items);
-    return ResponseEntity.noContent().build();
+  @PostMapping("/checkout")
+  @PreAuthorize("hasAuthority('SCOPE_Carrito.ReadWrite') or hasRole('Cliente') or hasRole('Admin')")
+  public Map<String, Object> checkout(@AuthenticationPrincipal Jwt jwt) {
+    String usuarioId = userIdFrom(jwt);
+    Carrito carrito = getOrCreateCarrito(usuarioId);
+    List<CarritoItem> items = itemRepository.findByCarritoId(carrito.getId());
+    if (items.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Carrito vacío");
+    long total = items.stream()
+        .mapToLong(i -> (i.getPrecioUnitarioClp() != null ? i.getPrecioUnitarioClp() : 0L) * i.getCantidad())
+        .sum();
+    // SIMPLIFICADO: checkout no persiste orden ni descuenta stock; solo vacía el carrito.
+    // Upgrade: crear entidad Orden, descontar stock en ms-productos via REST.
+    itemRepository.deleteAll(items);
+    Map<String, Object> resp = new HashMap<>();
+    resp.put("carritoId", carrito.getId());
+    resp.put("usuarioId", usuarioId);
+    resp.put("itemsComprados", items.size());
+    resp.put("totalClp", total);
+    resp.put("estado", "checkout_ok");
+    return resp;
   }
 }

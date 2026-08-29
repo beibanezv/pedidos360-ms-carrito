@@ -19,10 +19,8 @@ public class CarritoItem {
   @GeneratedValue(strategy = GenerationType.AUTO)
   private UUID id;
 
-  // SIMPLIFICADO: userId = oid/sub del JWT de Azure AD. Sin snapshot de usuario local.
-  // Si mañana agregas recomendaciones personalizadas, ya tienes la clave correcta.
   @Column(nullable = false)
-  private String userId;
+  private UUID carritoId;
 
   @NotNull
   @Column(nullable = false)
@@ -35,7 +33,11 @@ public class CarritoItem {
 
   // snapshot del precio al agregar al carrito (evita inconsistencia si ms-productos cambia precio)
   @Min(0)
-  private Long precioClp;
+  private Long precioUnitarioClp;
+
+  // compatibilidad con codigo previo (alias)
+  public Long getPrecioClp() { return precioUnitarioClp; }
+  public void setPrecioClp(Long v) { this.precioUnitarioClp = v; }
 
   @Column(nullable = false, updatable = false)
   private Instant agregadoEn = Instant.now();
@@ -45,8 +47,8 @@ public class CarritoItem {
   public UUID getId() { return id; }
   public void setId(UUID id) { this.id = id; }
 
-  public String getUserId() { return userId; }
-  public void setUserId(String userId) { this.userId = userId; }
+  public UUID getCarritoId() { return carritoId; }
+  public void setCarritoId(UUID carritoId) { this.carritoId = carritoId; }
 
   public UUID getProductoId() { return productoId; }
   public void setProductoId(UUID productoId) { this.productoId = productoId; }
@@ -54,8 +56,8 @@ public class CarritoItem {
   public Integer getCantidad() { return cantidad; }
   public void setCantidad(Integer cantidad) { this.cantidad = cantidad; }
 
-  public Long getPrecioClp() { return precioClp; }
-  public void setPrecioClp(Long precioClp) { this.precioClp = precioClp; }
+  public Long getPrecioUnitarioClp() { return precioUnitarioClp; }
+  public void setPrecioUnitarioClp(Long precioUnitarioClp) { this.precioUnitarioClp = precioUnitarioClp; }
 
   public Instant getAgregadoEn() { return agregadoEn; }
   public void setAgregadoEn(Instant agregadoEn) { this.agregadoEn = agregadoEn; }
