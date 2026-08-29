@@ -11,14 +11,20 @@ docker compose up -d          # Postgres en localhost:5433 (convive con ms-produ
 mvn spring-boot:run           # :8082
 ```
 
-## Endpoints (todos requieren JWT)
-- `GET /carrito` — lista items del usuario autenticado
-- `POST /carrito` — agrega `{productoId, cantidad, precioClp?}`
-- `PUT /carrito/{id}` — actualiza cantidad
-- `DELETE /carrito/{id}` — borra item
-- `DELETE /carrito` — vacía carrito
+## Modelo
+- `Carrito` (`id`, `usuarioId` desde `oid/sub` del JWT, `createdAt`)
+- `CarritoItem` (`id`, `carritoId`, `productoId`, `cantidad`, `precioUnitarioClp`)
 
-Scope/role: `SCOPE_Carrito.ReadWrite` o `ROLE_Cliente`/`ROLE_Admin` (claim `scp`/`roles` de Azure). Ver `SecurityConfig.java`.
+`usuarioId` nunca viene del cliente, se toma del token (`CarritoController.java`).
+
+## Endpoints (todos requieren JWT)
+- `GET /carrito` — carrito del usuario autenticado `{id, usuarioId, createdAt, items}`
+- `POST /carrito/items` — agrega `{productoId, cantidad, precioUnitarioClp?}`
+- `PUT /carrito/items/{id}` — actualiza cantidad/precio
+- `DELETE /carrito/items/{id}` — borra item
+- `POST /carrito/checkout` — compra lo del carrito y lo vacía (devuelve `totalClp`)
+
+Escritura protegida con `SCOPE_Carrito.ReadWrite` (o `ROLE_Cliente`/`ROLE_Admin`) vía `@PreAuthorize` (`SecurityConfig.java` + `@EnableMethodSecurity` en `CarritoController.java`). Lectura solo requiere JWT válido.
 
 ## Producción
 ```bash
