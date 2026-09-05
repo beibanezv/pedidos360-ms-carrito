@@ -9,4 +9,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface CarritoItemRepository extends JpaRepository<CarritoItem, UUID> {
   List<CarritoItem> findByCarritoId(UUID carritoId);
   Optional<CarritoItem> findByIdAndCarritoId(UUID id, UUID carritoId);
+  Optional<CarritoItem> findByCarritoIdAndProductoId(UUID carritoId, UUID productoId);
 }

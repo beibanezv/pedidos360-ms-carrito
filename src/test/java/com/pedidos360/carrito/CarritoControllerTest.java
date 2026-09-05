@@ -123,6 +123,28 @@ class CarritoControllerTest {
   }
 
   @Test
+  void postItem_productoDuplicado_sumaCantidad() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    CarritoItem existente = item(carrito.getId()); // cantidad 2
+    when(itemRepository.findByCarritoIdAndProductoId(carrito.getId(), existente.getProductoId()))
+        .thenReturn(Optional.of(existente));
+    when(itemRepository.save(any(CarritoItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    CarritoItem payload = new CarritoItem();
+    payload.setProductoId(existente.getProductoId());
+    payload.setCantidad(1);
+    payload.setPrecioUnitarioClp(19990L);
+
+    mockMvc.perform(post("/carrito/items")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(payload)))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.cantidad").value(3));
+  }
+
+  @Test
   void putItem_conScopeInsuficiente_retorna403() throws Exception {
     CarritoItem payload = new CarritoItem();
     payload.setProductoId(UUID.randomUUID());

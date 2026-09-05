@@ -8,6 +8,7 @@ import jakarta.validation.Valid;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -72,6 +73,15 @@ public class CarritoController {
     // SIMPLIFICADO: scope validado via @PreAuthorize (ej. Carrito.ReadWrite). Alternativa: hasAuthority en filterChain.
     String usuarioId = userIdFrom(jwt);
     Carrito carrito = getOrCreateCarrito(usuarioId);
+    // Si el producto ya está en el carrito, suma la cantidad en vez de duplicar la línea.
+    Optional<CarritoItem> existente = (body.getProductoId() != null)
+        ? itemRepository.findByCarritoIdAndProductoId(carrito.getId(), body.getProductoId())
+        : Optional.empty();
+    if (existente.isPresent()) {
+      CarritoItem item = existente.get();
+      item.setCantidad(item.getCantidad() + body.getCantidad());
+      return ResponseEntity.ok(itemRepository.save(item));
+    }
     body.setId(null);
     body.setCarritoId(carrito.getId());
     CarritoItem guardado = itemRepository.save(body);
