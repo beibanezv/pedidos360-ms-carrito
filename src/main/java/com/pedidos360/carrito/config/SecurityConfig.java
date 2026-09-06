@@ -88,7 +88,8 @@ public class SecurityConfig {
 
   @Bean
   public JwtDecoder jwtDecoder() {
-    // SIMPLIFICADO: estilo visto en clase — jwks = issuerUri + tenantId + "/discovery/v2.0/keys".
+    // SIMPLIFICADO: el access token real es ver 1.0 (iss sts.windows.net/<tid>/),
+    // por eso se usa el JWKS v1: issuerUri + tenantId + "/discovery/keys".
     // Sin tenant real ('common') no hay fetch en startup: sin token -> 401 sin tocar red.
     // Con tenant real valida firma contra JWKS de Azure.
     String base = (issuerUri != null && !issuerUri.isBlank())
@@ -98,6 +99,6 @@ public class SecurityConfig {
       base += "/";
     }
     String tid = (tenantId != null && !tenantId.isBlank()) ? tenantId.trim() : "common";
-    return NimbusJwtDecoder.withJwkSetUri(base + tid + "/discovery/v2.0/keys").build();
+    return NimbusJwtDecoder.withJwkSetUri(base + tid + "/discovery/keys").build();
   }
 }
