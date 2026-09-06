@@ -32,6 +32,9 @@ public class SecurityConfig {
   @Value("${azure.tenant-id:common}")
   private String tenantId;
 
+  @Value("${cors.allowed-origins:http://localhost:4200}")
+  private String allowedOrigins;
+
   @Bean
   public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
     http
@@ -71,14 +74,15 @@ public class SecurityConfig {
     return converter;
   }
 
-  // CORS: permite que el frontend (Angular en localhost:4200) llame directo a
-  // este backend con el header Authorization. Sin esto, el navegador aborta la
-  // petición tras un preflight OPTIONS fallido. En producción el CORS vive en
-  // el API Gateway (ver docs/aws-setup.md del frontend).
+  // CORS: orígenes configurables por env (coma-separados). En local el default
+  // basta; en EC2 se pasa CORS_ALLOWED_ORIGINS con la URL https del frontend.
+  // En producción el CORS grueso vive en el API Gateway (ver docs/aws-setup.md
+  // del frontend); esto evita el 403 "Invalid CORS request" de Spring cuando el
+  // Gateway reenvía el Origin del navegador al backend.
   @Bean
   public CorsConfigurationSource corsConfigurationSource() {
     CorsConfiguration config = new CorsConfiguration();
-    config.setAllowedOrigins(List.of("http://localhost:4200"));
+    config.setAllowedOrigins(List.of(allowedOrigins.split(",")));
     config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
     config.setAllowedHeaders(List.of("Authorization", "Content-Type"));
     UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
