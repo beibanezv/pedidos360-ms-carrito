@@ -1,5 +1,7 @@
 package com.pedidos360.carrito.controller;
 
+import com.pedidos360.carrito.messaging.OrdenCreadaEvent;
+import com.pedidos360.carrito.messaging.OrdenEventPublisher;
 import com.pedidos360.carrito.model.Carrito;
 import com.pedidos360.carrito.model.CarritoItem;
 import com.pedidos360.carrito.repository.CarritoItemRepository;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -31,10 +34,13 @@ public class CarritoController {
 
   private final CarritoRepository carritoRepository;
   private final CarritoItemRepository itemRepository;
+  private final OrdenEventPublisher ordenEventPublisher;
 
-  public CarritoController(CarritoRepository carritoRepository, CarritoItemRepository itemRepository) {
+  public CarritoController(CarritoRepository carritoRepository, CarritoItemRepository itemRepository,
+      OrdenEventPublisher ordenEventPublisher) {
     this.carritoRepository = carritoRepository;
     this.itemRepository = itemRepository;
+    this.ordenEventPublisher = ordenEventPublisher;
   }
 
   private String userIdFrom(Jwt jwt) {
@@ -115,7 +121,8 @@ public class CarritoController {
 
   @PostMapping("/checkout")
   @PreAuthorize("hasAuthority('SCOPE_Carrito.ReadWrite') or hasRole('Cliente') or hasRole('Admin')")
-  public Map<String, Object> checkout(@AuthenticationPrincipal Jwt jwt) {
+  public Map<String, Object> checkout(@AuthenticationPrincipal Jwt jwt,
+      @RequestParam(required = false) String codigoCupon) {
     String usuarioId = userIdFrom(jwt);
     Carrito carrito = getOrCreateCarrito(usuarioId);
     List<CarritoItem> items = itemRepository.findByCarritoId(carrito.getId());
@@ -123,10 +130,22 @@ public class CarritoController {
     long total = items.stream()
         .mapToLong(i -> (i.getPrecioUnitarioClp() != null ? i.getPrecioUnitarioClp() : 0L) * i.getCantidad())
         .sum();
-    // SIMPLIFICADO: checkout no persiste orden ni descuenta stock; solo vacía el carrito.
-    // Upgrade: crear entidad Orden, descontar stock en ms-productos via REST.
+    // Publica ANTES de vaciar: si el broker falla (503), el carrito sigue
+    // intacto y el cliente puede reintentar sin perder su compra.
+    // SIMPLIFICADO: sin tabla de outbox; si el proceso muere entre el
+    // publish y el deleteAll, un reintento del cliente duplicaría el evento.
+    // Upgrade: outbox transaccional o clave de idempotencia por ordenId.
+    UUID ordenId = UUID.randomUUID();
+    List<OrdenCreadaEvent.Item> itemsEvento = items.stream()
+        .map(i -> new OrdenCreadaEvent.Item(i.getProductoId(), i.getCantidad(),
+            i.getPrecioUnitarioClp() != null ? i.getPrecioUnitarioClp() : 0L))
+        .toList();
+    ordenEventPublisher.publicarOrdenCreada(new OrdenCreadaEvent(ordenId, usuarioId, itemsEvento,
+        total, codigoCupon));
     itemRepository.deleteAll(items);
     Map<String, Object> resp = new HashMap<>();
+    resp.put("ordenId", ordenId);
+    resp.put("codigoCupon", codigoCupon);
     resp.put("carritoId", carrito.getId());
     resp.put("usuarioId", usuarioId);
     resp.put("itemsComprados", items.size());
