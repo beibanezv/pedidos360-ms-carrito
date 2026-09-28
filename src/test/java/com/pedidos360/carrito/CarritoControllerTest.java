@@ -2,6 +2,7 @@ package com.pedidos360.carrito;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pedidos360.carrito.config.SecurityConfig;
+import com.pedidos360.carrito.messaging.OrdenEventPublisher;
 import com.pedidos360.carrito.model.Carrito;
 import com.pedidos360.carrito.model.CarritoItem;
 import com.pedidos360.carrito.repository.CarritoItemRepository;
@@ -38,6 +39,7 @@ class CarritoControllerTest {
   @MockBean CarritoRepository carritoRepository;
   @MockBean CarritoItemRepository itemRepository;
   @MockBean JwtDecoder jwtDecoder;
+  @MockBean OrdenEventPublisher ordenEventPublisher;
 
   private Carrito carrito(String usuarioId) {
     Carrito c = new Carrito(usuarioId);
