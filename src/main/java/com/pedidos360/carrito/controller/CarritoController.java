@@ -54,6 +54,18 @@ public class CarritoController {
     throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token sin sub/oid");
   }
 
+  private String emailFrom(Jwt jwt) {
+    if (jwt == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token requerido");
+    // Misma resolución que UsuarioDto (ms-login): claim "email", fallback "preferred_username".
+    // El email es obligatorio para notificar la compra: sin él, 400 (no se publica el evento).
+    String email = jwt.getClaimAsString("email");
+    if (email == null || email.isBlank()) email = jwt.getClaimAsString("preferred_username");
+    if (email == null || email.isBlank()) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Token sin email: no se puede notificar la compra");
+    }
+    return email;
+  }
+
   private Carrito getOrCreateCarrito(String usuarioId) {
     return carritoRepository.findByUsuarioId(usuarioId)
         .orElseGet(() -> carritoRepository.save(new Carrito(usuarioId)));
@@ -124,6 +136,7 @@ public class CarritoController {
   public Map<String, Object> checkout(@AuthenticationPrincipal Jwt jwt,
       @RequestParam(required = false) String codigoCupon) {
     String usuarioId = userIdFrom(jwt);
+    String emailComprador = emailFrom(jwt);
     Carrito carrito = getOrCreateCarrito(usuarioId);
     List<CarritoItem> items = itemRepository.findByCarritoId(carrito.getId());
     if (items.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Carrito vacío");
@@ -140,14 +153,15 @@ public class CarritoController {
         .map(i -> new OrdenCreadaEvent.Item(i.getProductoId(), i.getCantidad(),
             i.getPrecioUnitarioClp() != null ? i.getPrecioUnitarioClp() : 0L))
         .toList();
-    ordenEventPublisher.publicarOrdenCreada(new OrdenCreadaEvent(ordenId, usuarioId, itemsEvento,
-        total, codigoCupon));
+    ordenEventPublisher.publicarOrdenCreada(new OrdenCreadaEvent(ordenId, usuarioId, emailComprador,
+        itemsEvento, total, codigoCupon));
     itemRepository.deleteAll(items);
     Map<String, Object> resp = new HashMap<>();
     resp.put("ordenId", ordenId);
     resp.put("codigoCupon", codigoCupon);
     resp.put("carritoId", carrito.getId());
     resp.put("usuarioId", usuarioId);
+    resp.put("emailComprador", emailComprador);
     resp.put("itemsComprados", items.size());
     resp.put("totalClp", total);
     resp.put("estado", "checkout_ok");

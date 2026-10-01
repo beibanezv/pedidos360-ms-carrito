@@ -2,6 +2,7 @@ package com.pedidos360.carrito;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pedidos360.carrito.config.SecurityConfig;
+import com.pedidos360.carrito.messaging.OrdenCreadaEvent;
 import com.pedidos360.carrito.messaging.OrdenEventPublisher;
 import com.pedidos360.carrito.model.Carrito;
 import com.pedidos360.carrito.model.CarritoItem;
@@ -11,6 +12,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -21,6 +23,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -170,10 +173,40 @@ class CarritoControllerTest {
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
 
     mockMvc.perform(post("/carrito/checkout")
-            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123").claim("email", "comprador@mail.com")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.estado").value("checkout_ok"))
-        .andExpect(jsonPath("$.totalClp").value(39980));
+        .andExpect(jsonPath("$.totalClp").value(39980))
+        .andExpect(jsonPath("$.emailComprador").value("comprador@mail.com"));
+
+    ArgumentCaptor<OrdenCreadaEvent> captor = ArgumentCaptor.forClass(OrdenCreadaEvent.class);
+    verify(ordenEventPublisher).publicarOrdenCreada(captor.capture());
+    org.junit.jupiter.api.Assertions.assertEquals("comprador@mail.com", captor.getValue().emailComprador());
+    org.junit.jupiter.api.Assertions.assertEquals("oid-123", captor.getValue().usuarioId());
+  }
+
+  @Test
+  void checkout_conPreferredUsername_usaEseEmail() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    when(carritoRepository.save(any(Carrito.class))).thenReturn(carrito);
+    CarritoItem ci = item(carrito.getId());
+    when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
+
+    mockMvc.perform(post("/carrito/checkout")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123").claim("preferred_username", "upn@mail.com")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.emailComprador").value("upn@mail.com"));
+  }
+
+  @Test
+  void checkout_sinEmail_retorna400() throws Exception {
+    // JWT válido con scope pero sin email ni preferred_username: la compra se rechaza.
+    mockMvc.perform(post("/carrito/checkout")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isBadRequest());
+
+    verify(ordenEventPublisher, org.mockito.Mockito.never()).publicarOrdenCreada(any());
   }
 
   @Test
