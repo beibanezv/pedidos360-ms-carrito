@@ -28,7 +28,7 @@ Escritura protegida con `SCOPE_Carrito.ReadWrite` (o `ROLE_Cliente`/`ROLE_Admin`
 
 ## Producción
 ```bash
-SPRING_PROFILES_ACTIVE=prod SPRING_DATASOURCE_URL=... AZURE_TENANT_JWKS_URI=https://login.microsoftonline.com/<tenant>/v2.0 java -jar target/ms-carrito-*.jar
+SPRING_PROFILES_ACTIVE=prod SPRING_DATASOURCE_URL=... AZURE_TENANT_ID=<Directory (tenant) ID> java -jar target/ms-carrito-*.jar
 ```
 
 ## Tests
