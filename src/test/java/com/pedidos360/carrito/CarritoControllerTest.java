@@ -214,4 +214,34 @@ class CarritoControllerTest {
     mockMvc.perform(post("/carrito/checkout"))
         .andExpect(status().isUnauthorized());
   }
+
+  @Test
+  void checkout_conEmailParam_sinEmailEnToken_retorna200() throws Exception {
+    // JWT sin email (Azure corporativo) + email declarado en el request.
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    when(carritoRepository.save(any(Carrito.class))).thenReturn(carrito);
+    CarritoItem ci = item(carrito.getId());
+    when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
+
+    mockMvc.perform(post("/carrito/checkout")
+            .param("email", "comprador@mail.com")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.emailComprador").value("comprador@mail.com"));
+
+    ArgumentCaptor<OrdenCreadaEvent> captor = ArgumentCaptor.forClass(OrdenCreadaEvent.class);
+    verify(ordenEventPublisher).publicarOrdenCreada(captor.capture());
+    org.junit.jupiter.api.Assertions.assertEquals("comprador@mail.com", captor.getValue().emailComprador());
+  }
+
+  @Test
+  void checkout_conEmailParamInvalido_retorna400() throws Exception {
+    mockMvc.perform(post("/carrito/checkout")
+            .param("email", "no-es-email")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isBadRequest());
+
+    verify(ordenEventPublisher, org.mockito.Mockito.never()).publicarOrdenCreada(any());
+  }
 }
