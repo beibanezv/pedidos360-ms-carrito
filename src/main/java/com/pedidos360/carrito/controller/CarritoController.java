@@ -134,9 +134,19 @@ public class CarritoController {
   @PostMapping("/checkout")
   @PreAuthorize("hasAuthority('SCOPE_Carrito.ReadWrite') or hasRole('Cliente') or hasRole('Admin')")
   public Map<String, Object> checkout(@AuthenticationPrincipal Jwt jwt,
-      @RequestParam(required = false) String codigoCupon) {
+      @RequestParam(required = false) String codigoCupon,
+      @RequestParam(required = false) String email) {
     String usuarioId = userIdFrom(jwt);
-    String emailComprador = emailFrom(jwt);
+    // SIMPLIFICADO: las cuentas corporativas de Azure no siempre traen email
+    // en el token; como cualquier tienda real, se lo pedimos al comprador en
+    // el checkout. El del request manda; si no viene se usa el del token y sin
+    // ninguno se rechaza con 400 (no se puede notificar la compra).
+    String emailComprador = email == null ? null : email.trim();
+    if (emailComprador == null || emailComprador.isBlank()) {
+      emailComprador = emailFrom(jwt);
+    } else if (!emailComprador.matches(".+@.+\\..+")) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email inválido");
+    }
     Carrito carrito = getOrCreateCarrito(usuarioId);
     List<CarritoItem> items = itemRepository.findByCarritoId(carrito.getId());
     if (items.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Carrito vacío");
