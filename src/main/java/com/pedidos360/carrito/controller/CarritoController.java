@@ -39,13 +39,15 @@ public class CarritoController {
   private final CarritoItemRepository itemRepository;
   private final OrdenEventPublisher ordenEventPublisher;
   private final ApplicationEventPublisher events;
+  private final CatalogoPrecios catalogoPrecios;
 
   public CarritoController(CarritoRepository carritoRepository, CarritoItemRepository itemRepository,
-      OrdenEventPublisher ordenEventPublisher, ApplicationEventPublisher events) {
+      OrdenEventPublisher ordenEventPublisher, ApplicationEventPublisher events, CatalogoPrecios catalogoPrecios) {
     this.carritoRepository = carritoRepository;
     this.itemRepository = itemRepository;
     this.ordenEventPublisher = ordenEventPublisher;
     this.events = events;
+    this.catalogoPrecios = catalogoPrecios;
   }
 
   private String userIdFrom(Jwt jwt) {
@@ -158,19 +160,22 @@ public class CarritoController {
     Carrito carrito = getOrCreateCarrito(usuarioId);
     List<CarritoItem> items = itemRepository.findByCarritoId(carrito.getId());
     if (items.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Carrito vacío");
-    long total = items.stream()
-        .mapToLong(i -> (i.getPrecioUnitarioClp() != null ? i.getPrecioUnitarioClp() : 0L) * i.getCantidad())
-        .sum();
+    List<OrdenCreadaEvent.Item> itemsEvento = items.stream()
+        .map(i -> new OrdenCreadaEvent.Item(i.getProductoId(), i.getCantidad(), catalogoPrecios.precio(i.getProductoId())))
+        .toList();
+    long total;
+    try {
+      total = itemsEvento.stream().mapToLong(i -> Math.multiplyExact(i.precioUnitarioClp(), i.cantidad()))
+          .reduce(0L, Math::addExact);
+    } catch (ArithmeticException ex) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Total de carrito fuera de rango");
+    }
     // Publica ANTES de vaciar: si el broker falla (503), el carrito sigue
     // intacto y el cliente puede reintentar sin perder su compra.
     // SIMPLIFICADO: sin tabla de outbox; si el proceso muere entre el
     // publish y el deleteAll, un reintento del cliente duplicaría el evento.
     // Upgrade: outbox transaccional o clave de idempotencia por ordenId.
     UUID ordenId = UUID.randomUUID();
-    List<OrdenCreadaEvent.Item> itemsEvento = items.stream()
-        .map(i -> new OrdenCreadaEvent.Item(i.getProductoId(), i.getCantidad(),
-            i.getPrecioUnitarioClp() != null ? i.getPrecioUnitarioClp() : 0L))
-        .toList();
     ordenEventPublisher.publicarOrdenCreada(new OrdenCreadaEvent(ordenId, usuarioId, emailComprador,
         itemsEvento, total, codigoCupon));
     itemRepository.deleteAll(items);

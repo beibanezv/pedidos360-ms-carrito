@@ -22,11 +22,13 @@ mvn spring-boot:run           # :8082
 - `POST /carrito/items` — agrega `{productoId, cantidad, precioUnitarioClp?}`
 - `PUT /carrito/items/{id}` — actualiza cantidad/precio
 - `DELETE /carrito/items/{id}` — borra item
-- `POST /carrito/checkout` — compra lo del carrito y lo vacía (devuelve `totalClp`)
+- `POST /carrito/checkout` — consulta el precio vigente de cada producto, registra la orden y vacía el carrito (devuelve `totalClp`). Si el catálogo no responde, devuelve 503 sin vaciar el carrito.
 
 Escritura protegida con `SCOPE_Carrito.ReadWrite` (o `ROLE_Cliente`/`ROLE_Admin`) vía `@PreAuthorize` (`SecurityConfig.java` + `@EnableMethodSecurity` en `CarritoController.java`). Lectura solo requiere JWT válido.
 
 ## Producción
+Configura `PRODUCTOS_URL` con el origen privado de ms-productos (`http://localhost:8081` en local). El precio de las líneas enviado desde el navegador no se usa para registrar la orden.
+
 ```bash
 SPRING_PROFILES_ACTIVE=prod SPRING_DATASOURCE_URL=... AZURE_TENANT_ID=<Directory (tenant) ID> java -jar target/ms-carrito-*.jar
 ```

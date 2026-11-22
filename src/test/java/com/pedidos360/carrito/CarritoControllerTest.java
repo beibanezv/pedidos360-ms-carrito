@@ -2,6 +2,7 @@ package com.pedidos360.carrito;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pedidos360.carrito.config.SecurityConfig;
+import com.pedidos360.carrito.controller.CatalogoPrecios;
 import com.pedidos360.carrito.messaging.InteraccionEvent;
 import com.pedidos360.carrito.messaging.OrdenCreadaEvent;
 import com.pedidos360.carrito.messaging.OrdenEventPublisher;
@@ -48,6 +49,7 @@ class CarritoControllerTest {
   @MockBean CarritoItemRepository itemRepository;
   @MockBean JwtDecoder jwtDecoder;
   @MockBean OrdenEventPublisher ordenEventPublisher;
+  @MockBean CatalogoPrecios catalogoPrecios;
 
   private Carrito carrito(String usuarioId) {
     Carrito c = new Carrito(usuarioId);
@@ -181,6 +183,8 @@ class CarritoControllerTest {
     // also used by getOrCreate
     when(carritoRepository.save(any(Carrito.class))).thenReturn(carrito);
     CarritoItem ci = item(carrito.getId());
+    ci.setPrecioUnitarioClp(100L);
+    when(catalogoPrecios.precio(ci.getProductoId())).thenReturn(19990L);
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
 
     mockMvc.perform(post("/carrito/checkout")
@@ -195,6 +199,8 @@ class CarritoControllerTest {
     verify(ordenEventPublisher).publicarOrdenCreada(captor.capture());
     org.junit.jupiter.api.Assertions.assertEquals("comprador@mail.com", captor.getValue().emailComprador());
     org.junit.jupiter.api.Assertions.assertEquals("oid-123", captor.getValue().usuarioId());
+    org.junit.jupiter.api.Assertions.assertEquals(39980L, captor.getValue().totalClp());
+    org.junit.jupiter.api.Assertions.assertEquals(19990L, captor.getValue().items().get(0).precioUnitarioClp());
     org.assertj.core.api.Assertions.assertThat(events.stream(InteraccionEvent.class).map(InteraccionEvent::tipo))
         .containsExactly(InteraccionEvent.Tipo.CUPON_INGRESADO, InteraccionEvent.Tipo.ENVIO_CONFIRMADO);
   }
@@ -205,6 +211,7 @@ class CarritoControllerTest {
     when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
     when(carritoRepository.save(any(Carrito.class))).thenReturn(carrito);
     CarritoItem ci = item(carrito.getId());
+    when(catalogoPrecios.precio(ci.getProductoId())).thenReturn(19990L);
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
 
     mockMvc.perform(post("/carrito/checkout")
@@ -236,6 +243,7 @@ class CarritoControllerTest {
     when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
     when(carritoRepository.save(any(Carrito.class))).thenReturn(carrito);
     CarritoItem ci = item(carrito.getId());
+    when(catalogoPrecios.precio(ci.getProductoId())).thenReturn(19990L);
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
 
     mockMvc.perform(post("/carrito/checkout")
@@ -257,5 +265,21 @@ class CarritoControllerTest {
         .andExpect(status().isBadRequest());
 
     verify(ordenEventPublisher, org.mockito.Mockito.never()).publicarOrdenCreada(any());
+  }
+
+  @Test
+  void checkout_sinCatalogoNoRegistraNiVaciaElCarrito() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    CarritoItem ci = item(carrito.getId());
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
+    when(catalogoPrecios.precio(ci.getProductoId())).thenThrow(new org.springframework.web.server.ResponseStatusException(
+        org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "No pudimos consultar los precios"));
+    mockMvc.perform(post("/carrito/checkout").param("email", "comprador@mail.com")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123"))
+                .authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isServiceUnavailable());
+    verify(ordenEventPublisher, org.mockito.Mockito.never()).publicarOrdenCreada(any());
+    verify(itemRepository, org.mockito.Mockito.never()).deleteAll(any());
   }
 }
