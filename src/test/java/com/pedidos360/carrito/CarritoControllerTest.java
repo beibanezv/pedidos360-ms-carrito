@@ -2,6 +2,7 @@ package com.pedidos360.carrito;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pedidos360.carrito.config.SecurityConfig;
+import com.pedidos360.carrito.messaging.InteraccionEvent;
 import com.pedidos360.carrito.messaging.OrdenCreadaEvent;
 import com.pedidos360.carrito.messaging.OrdenEventPublisher;
 import com.pedidos360.carrito.model.Carrito;
@@ -21,6 +22,8 @@ import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -35,10 +38,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(com.pedidos360.carrito.controller.CarritoController.class)
 @Import(SecurityConfig.class)
+@RecordApplicationEvents
 class CarritoControllerTest {
 
   @Autowired MockMvc mockMvc;
   @Autowired ObjectMapper objectMapper;
+  @Autowired ApplicationEvents events;
   @MockBean CarritoRepository carritoRepository;
   @MockBean CarritoItemRepository itemRepository;
   @MockBean JwtDecoder jwtDecoder;
@@ -125,6 +130,12 @@ class CarritoControllerTest {
             .content(objectMapper.writeValueAsString(payload)))
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.carritoId").value(carrito.getId().toString()));
+    org.assertj.core.api.Assertions.assertThat(events.stream(InteraccionEvent.class))
+        .singleElement().satisfies(evento -> {
+          org.assertj.core.api.Assertions.assertThat(evento.usuarioId()).isEqualTo("oid-123");
+          org.assertj.core.api.Assertions.assertThat(evento.tipo()).isEqualTo(InteraccionEvent.Tipo.AGREGAR_CARRITO);
+          org.assertj.core.api.Assertions.assertThat(evento.productoId()).isEqualTo(payload.getProductoId());
+        });
   }
 
   @Test
@@ -173,6 +184,7 @@ class CarritoControllerTest {
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
 
     mockMvc.perform(post("/carrito/checkout")
+            .param("codigoCupon", "TEST10")
             .with(jwt().jwt(j -> j.claim("oid", "oid-123").claim("email", "comprador@mail.com")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.estado").value("checkout_ok"))
@@ -183,6 +195,8 @@ class CarritoControllerTest {
     verify(ordenEventPublisher).publicarOrdenCreada(captor.capture());
     org.junit.jupiter.api.Assertions.assertEquals("comprador@mail.com", captor.getValue().emailComprador());
     org.junit.jupiter.api.Assertions.assertEquals("oid-123", captor.getValue().usuarioId());
+    org.assertj.core.api.Assertions.assertThat(events.stream(InteraccionEvent.class).map(InteraccionEvent::tipo))
+        .containsExactly(InteraccionEvent.Tipo.CUPON_INGRESADO, InteraccionEvent.Tipo.ENVIO_CONFIRMADO);
   }
 
   @Test

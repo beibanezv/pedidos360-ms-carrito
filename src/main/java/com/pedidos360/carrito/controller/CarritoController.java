@@ -1,18 +1,21 @@
 package com.pedidos360.carrito.controller;
 
 import com.pedidos360.carrito.messaging.OrdenCreadaEvent;
+import com.pedidos360.carrito.messaging.InteraccionEvent;
 import com.pedidos360.carrito.messaging.OrdenEventPublisher;
 import com.pedidos360.carrito.model.Carrito;
 import com.pedidos360.carrito.model.CarritoItem;
 import com.pedidos360.carrito.repository.CarritoItemRepository;
 import com.pedidos360.carrito.repository.CarritoRepository;
 import jakarta.validation.Valid;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -35,12 +38,14 @@ public class CarritoController {
   private final CarritoRepository carritoRepository;
   private final CarritoItemRepository itemRepository;
   private final OrdenEventPublisher ordenEventPublisher;
+  private final ApplicationEventPublisher events;
 
   public CarritoController(CarritoRepository carritoRepository, CarritoItemRepository itemRepository,
-      OrdenEventPublisher ordenEventPublisher) {
+      OrdenEventPublisher ordenEventPublisher, ApplicationEventPublisher events) {
     this.carritoRepository = carritoRepository;
     this.itemRepository = itemRepository;
     this.ordenEventPublisher = ordenEventPublisher;
+    this.events = events;
   }
 
   private String userIdFrom(Jwt jwt) {
@@ -98,11 +103,14 @@ public class CarritoController {
     if (existente.isPresent()) {
       CarritoItem item = existente.get();
       item.setCantidad(item.getCantidad() + body.getCantidad());
-      return ResponseEntity.ok(itemRepository.save(item));
+      CarritoItem guardado = itemRepository.save(item);
+      registrar(usuarioId, InteraccionEvent.Tipo.AGREGAR_CARRITO, item.getProductoId());
+      return ResponseEntity.ok(guardado);
     }
     body.setId(null);
     body.setCarritoId(carrito.getId());
     CarritoItem guardado = itemRepository.save(body);
+    registrar(usuarioId, InteraccionEvent.Tipo.AGREGAR_CARRITO, body.getProductoId());
     return ResponseEntity.status(HttpStatus.CREATED).body(guardado);
   }
 
@@ -166,6 +174,10 @@ public class CarritoController {
     ordenEventPublisher.publicarOrdenCreada(new OrdenCreadaEvent(ordenId, usuarioId, emailComprador,
         itemsEvento, total, codigoCupon));
     itemRepository.deleteAll(items);
+    if (codigoCupon != null && !codigoCupon.isBlank()) {
+      registrar(usuarioId, InteraccionEvent.Tipo.CUPON_INGRESADO, null);
+    }
+    registrar(usuarioId, InteraccionEvent.Tipo.ENVIO_CONFIRMADO, null);
     Map<String, Object> resp = new HashMap<>();
     resp.put("ordenId", ordenId);
     resp.put("codigoCupon", codigoCupon);
@@ -176,5 +188,9 @@ public class CarritoController {
     resp.put("totalClp", total);
     resp.put("estado", "checkout_ok");
     return resp;
+  }
+
+  private void registrar(String usuario, InteraccionEvent.Tipo tipo, UUID productoId) {
+    events.publishEvent(new InteraccionEvent(UUID.randomUUID(), usuario, tipo, productoId, Instant.now()));
   }
 }
