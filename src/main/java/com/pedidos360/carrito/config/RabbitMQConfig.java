@@ -1,9 +1,16 @@
 package com.pedidos360.carrito.config;
 
+import com.fasterxml.jackson.databind.JavaType;
+import com.pedidos360.carrito.messaging.OrdenCreadaEvent;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import org.springframework.amqp.core.Binding;
+import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
+import org.springframework.amqp.support.converter.DefaultJackson2JavaTypeMapper;
+import org.springframework.amqp.support.converter.Jackson2JavaTypeMapper;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
@@ -68,9 +75,40 @@ public class RabbitMQConfig {
         DLX_EXCHANGE, ORDENES_QUEUE, null);
   }
 
-  // Los eventos viajan como JSON (records de messaging.*).
+  /**
+   * Mapeo explicito de tipos: el sobre lleva el nombre simple del DTO, nunca un
+   * paquete de otro servicio. Los FQCN historicos se aceptan como alias hacia
+   * la clase local, sin setTrustedPackages("*").
+   *
+   * El orden importa: DefaultJackson2JavaTypeMapper invierte el mapa y el ultimo
+   * id escrito para una misma clase es el que se publica en __TypeId__. Por eso
+   * los alias van primero y el nombre simple al final.
+   */
+  public static DefaultJackson2JavaTypeMapper jsonTypeMapper() {
+    Map<String, Class<?>> ids = new LinkedHashMap<>();
+    ids.put("com.pedidos360.orders.messaging.OrdenCreadaEvent", OrdenCreadaEvent.class);
+    ids.put("OrdenCreadaEvent", OrdenCreadaEvent.class);
+
+    // El mapper invierte el mapa en un HashMap: si solo dependieramos del orden
+    // de insercion, un alias FQCN podria ganar al publicar. Fijamos el id simple.
+    DefaultJackson2JavaTypeMapper mapper = new DefaultJackson2JavaTypeMapper() {
+      @Override
+      public void fromJavaType(JavaType javaType, MessageProperties properties) {
+        super.fromJavaType(javaType, properties);
+        if (javaType.getRawClass() == OrdenCreadaEvent.class) {
+          properties.setHeader(DEFAULT_CLASSID_FIELD_NAME, "OrdenCreadaEvent");
+        }
+      }
+    };
+    mapper.setIdClassMapping(ids);
+    mapper.setTypePrecedence(Jackson2JavaTypeMapper.TypePrecedence.TYPE_ID);
+    return mapper;
+  }
+
   @Bean
   MessageConverter jsonMessageConverter() {
-    return new Jackson2JsonMessageConverter();
+    Jackson2JsonMessageConverter converter = new Jackson2JsonMessageConverter();
+    converter.setJavaTypeMapper(jsonTypeMapper());
+    return converter;
   }
 }
