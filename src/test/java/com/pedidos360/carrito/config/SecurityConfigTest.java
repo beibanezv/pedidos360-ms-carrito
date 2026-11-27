@@ -324,6 +324,6 @@ class SecurityConfigTest {
     assertEquals("${AZURE_AUDIENCE}", prod.getProperty("azure.audience"));
     assertEquals("${COGNITO_CLIENT_ID}", prod.getProperty("cognito.client-id"));
     assertEquals("${COGNITO_JWKS_URI}", prod.getProperty("cognito.jwks-uri"));
-    assertEquals("${COGNITO_ISSUER}", prod.getProperty("cognito.issuer"));
+    assertEquals("${COGNITO_ISSUER:}", prod.getProperty("cognito.issuer"));
   }
 }
