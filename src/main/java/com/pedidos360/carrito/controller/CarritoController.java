@@ -78,6 +78,15 @@ public class CarritoController {
         .orElseGet(() -> carritoRepository.save(new Carrito(usuarioId)));
   }
 
+  private CatalogoPrecios.Producto validarCantidad(UUID productoId, int cantidad) {
+    if (cantidad <= 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cantidad inválida");
+    CatalogoPrecios.Producto producto = catalogoPrecios.consultar(productoId);
+    if (cantidad > producto.stock()) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "Stock insuficiente");
+    }
+    return producto;
+  }
+
   // Todos requieren JWT (ver SecurityConfig). Escritura además requiere scope.
   @GetMapping
   public Map<String, Object> obtenerCarrito(@AuthenticationPrincipal Jwt jwt) {
@@ -102,15 +111,29 @@ public class CarritoController {
     Optional<CarritoItem> existente = (body.getProductoId() != null)
         ? itemRepository.findByCarritoIdAndProductoId(carrito.getId(), body.getProductoId())
         : Optional.empty();
-    if (existente.isPresent()) {
-      CarritoItem item = existente.get();
-      item.setCantidad(item.getCantidad() + body.getCantidad());
+    CarritoItem item = existente.orElse(null);
+    int cantidadFinal;
+    if (item != null) {
+      try {
+        cantidadFinal = Math.addExact(item.getCantidad(), body.getCantidad());
+      } catch (ArithmeticException ex) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cantidad fuera de rango");
+      }
+    } else {
+      cantidadFinal = body.getCantidad();
+    }
+    CatalogoPrecios.Producto producto = validarCantidad(
+        item == null ? body.getProductoId() : item.getProductoId(), cantidadFinal);
+    if (item != null) {
+      item.setCantidad(cantidadFinal);
+      item.setPrecioUnitarioClp(producto.precioClp());
       CarritoItem guardado = itemRepository.save(item);
       registrar(usuarioId, InteraccionEvent.Tipo.AGREGAR_CARRITO, item.getProductoId());
       return ResponseEntity.ok(guardado);
     }
     body.setId(null);
     body.setCarritoId(carrito.getId());
+    body.setPrecioUnitarioClp(producto.precioClp());
     CarritoItem guardado = itemRepository.save(body);
     registrar(usuarioId, InteraccionEvent.Tipo.AGREGAR_CARRITO, body.getProductoId());
     return ResponseEntity.status(HttpStatus.CREATED).body(guardado);
@@ -123,9 +146,12 @@ public class CarritoController {
     Carrito carrito = getOrCreateCarrito(usuarioId);
     CarritoItem existente = itemRepository.findByIdAndCarritoId(id, carrito.getId())
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item no encontrado"));
+    if (body.getProductoId() != null && !body.getProductoId().equals(existente.getProductoId())) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No se puede cambiar el producto de la línea");
+    }
+    CatalogoPrecios.Producto producto = validarCantidad(existente.getProductoId(), body.getCantidad());
     existente.setCantidad(body.getCantidad());
-    if (body.getPrecioUnitarioClp() != null) existente.setPrecioUnitarioClp(body.getPrecioUnitarioClp());
-    if (body.getProductoId() != null) existente.setProductoId(body.getProductoId());
+    existente.setPrecioUnitarioClp(producto.precioClp());
     return itemRepository.save(existente);
   }
 
@@ -160,8 +186,22 @@ public class CarritoController {
     Carrito carrito = getOrCreateCarrito(usuarioId);
     List<CarritoItem> items = itemRepository.findByCarritoId(carrito.getId());
     if (items.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Carrito vacío");
+    Map<UUID, Integer> cantidadesPorProducto = new HashMap<>();
+    for (CarritoItem i : items) {
+      if (i.getCantidad() == null || i.getCantidad() <= 0) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cantidad inválida");
+      }
+      try {
+        cantidadesPorProducto.merge(i.getProductoId(), i.getCantidad(), Math::addExact);
+      } catch (ArithmeticException ex) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cantidad fuera de rango");
+      }
+    }
+    Map<UUID, Long> preciosPorProducto = new HashMap<>();
+    cantidadesPorProducto.forEach((productoId, cantidad) ->
+        preciosPorProducto.put(productoId, validarCantidad(productoId, cantidad).precioClp()));
     List<OrdenCreadaEvent.Item> itemsEvento = items.stream()
-        .map(i -> new OrdenCreadaEvent.Item(i.getProductoId(), i.getCantidad(), catalogoPrecios.precio(i.getProductoId())))
+        .map(i -> new OrdenCreadaEvent.Item(i.getProductoId(), i.getCantidad(), preciosPorProducto.get(i.getProductoId())))
         .toList();
     long total;
     try {

@@ -26,7 +26,9 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.context.event.ApplicationEvents;
 import org.springframework.test.context.event.RecordApplicationEvents;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
@@ -65,6 +67,10 @@ class CarritoControllerTest {
     ci.setCantidad(2);
     ci.setPrecioUnitarioClp(19990L);
     return ci;
+  }
+
+  private void catalogo(UUID id, long precio, int stock) {
+    when(catalogoPrecios.consultar(id)).thenReturn(new CatalogoPrecios.Producto(id, precio, stock));
   }
 
   @Test
@@ -125,6 +131,7 @@ class CarritoControllerTest {
     payload.setProductoId(UUID.randomUUID());
     payload.setCantidad(1);
     payload.setPrecioUnitarioClp(9990L);
+    catalogo(payload.getProductoId(), 19990L, 5);
 
     mockMvc.perform(post("/carrito/items")
             .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
@@ -148,6 +155,7 @@ class CarritoControllerTest {
     when(itemRepository.findByCarritoIdAndProductoId(carrito.getId(), existente.getProductoId()))
         .thenReturn(Optional.of(existente));
     when(itemRepository.save(any(CarritoItem.class))).thenAnswer(inv -> inv.getArgument(0));
+    catalogo(existente.getProductoId(), 19990L, 5);
 
     CarritoItem payload = new CarritoItem();
     payload.setProductoId(existente.getProductoId());
@@ -184,7 +192,7 @@ class CarritoControllerTest {
     when(carritoRepository.save(any(Carrito.class))).thenReturn(carrito);
     CarritoItem ci = item(carrito.getId());
     ci.setPrecioUnitarioClp(100L);
-    when(catalogoPrecios.precio(ci.getProductoId())).thenReturn(19990L);
+    catalogo(ci.getProductoId(), 19990L, 3);
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
 
     mockMvc.perform(post("/carrito/checkout")
@@ -211,7 +219,7 @@ class CarritoControllerTest {
     when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
     when(carritoRepository.save(any(Carrito.class))).thenReturn(carrito);
     CarritoItem ci = item(carrito.getId());
-    when(catalogoPrecios.precio(ci.getProductoId())).thenReturn(19990L);
+    catalogo(ci.getProductoId(), 19990L, 3);
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
 
     mockMvc.perform(post("/carrito/checkout")
@@ -243,7 +251,7 @@ class CarritoControllerTest {
     when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
     when(carritoRepository.save(any(Carrito.class))).thenReturn(carrito);
     CarritoItem ci = item(carrito.getId());
-    when(catalogoPrecios.precio(ci.getProductoId())).thenReturn(19990L);
+    catalogo(ci.getProductoId(), 19990L, 3);
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
 
     mockMvc.perform(post("/carrito/checkout")
@@ -273,7 +281,7 @@ class CarritoControllerTest {
     CarritoItem ci = item(carrito.getId());
     when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
     when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(ci));
-    when(catalogoPrecios.precio(ci.getProductoId())).thenThrow(new org.springframework.web.server.ResponseStatusException(
+    when(catalogoPrecios.consultar(ci.getProductoId())).thenThrow(new org.springframework.web.server.ResponseStatusException(
         org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "No pudimos consultar los precios"));
     mockMvc.perform(post("/carrito/checkout").param("email", "comprador@mail.com")
             .with(jwt().jwt(j -> j.claim("oid", "oid-123"))
@@ -281,5 +289,255 @@ class CarritoControllerTest {
         .andExpect(status().isServiceUnavailable());
     verify(ordenEventPublisher, org.mockito.Mockito.never()).publicarOrdenCreada(any());
     verify(itemRepository, org.mockito.Mockito.never()).deleteAll(any());
+  }
+
+  @Test
+  void agregarItemRechazaDesbordeSinGuardar() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    CarritoItem existente = item(carrito.getId());
+    existente.setCantidad(Integer.MAX_VALUE);
+    when(itemRepository.findByCarritoIdAndProductoId(carrito.getId(), existente.getProductoId()))
+        .thenReturn(Optional.of(existente));
+
+    CarritoItem payload = new CarritoItem();
+    payload.setProductoId(existente.getProductoId());
+    payload.setCantidad(1);
+    payload.setPrecioUnitarioClp(19990L);
+
+    mockMvc.perform(post("/carrito/items")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(payload)))
+        .andExpect(status().isBadRequest());
+
+    verify(itemRepository, never()).save(any(CarritoItem.class));
+    assertThat(events.stream(InteraccionEvent.class)).isEmpty();
+  }
+
+  @Test
+  void agregarItemIgnoraPrecioManipulado() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    when(itemRepository.save(any(CarritoItem.class))).thenAnswer(inv -> inv.getArgument(0));
+    UUID productoId = UUID.randomUUID();
+    catalogo(productoId, 19990L, 5);
+
+    CarritoItem payload = new CarritoItem();
+    payload.setProductoId(productoId);
+    payload.setCantidad(1);
+    payload.setPrecioUnitarioClp(1L);
+
+    mockMvc.perform(post("/carrito/items")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(payload)))
+        .andExpect(status().isCreated());
+
+    ArgumentCaptor<CarritoItem> captor = ArgumentCaptor.forClass(CarritoItem.class);
+    verify(itemRepository).save(captor.capture());
+    assertThat(captor.getValue().getPrecioUnitarioClp()).isEqualTo(19990L);
+  }
+
+  @Test
+  void agregarItemValidaCantidadAcumuladaContraStock() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    CarritoItem existente = item(carrito.getId()); // cantidad 2
+    when(itemRepository.findByCarritoIdAndProductoId(carrito.getId(), existente.getProductoId()))
+        .thenReturn(Optional.of(existente));
+    catalogo(existente.getProductoId(), 19990L, 3);
+
+    CarritoItem payload = new CarritoItem();
+    payload.setProductoId(existente.getProductoId());
+    payload.setCantidad(2);
+    payload.setPrecioUnitarioClp(19990L);
+
+    mockMvc.perform(post("/carrito/items")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(payload)))
+        .andExpect(status().isConflict());
+
+    verify(itemRepository, never()).save(any(CarritoItem.class));
+    assertThat(events.stream(InteraccionEvent.class)).isEmpty();
+  }
+
+  @Test
+  void agregarItemRechazaCantidadInvalida() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+
+    for (int cantidad : new int[] {0, -1}) {
+      CarritoItem payload = new CarritoItem();
+      payload.setProductoId(UUID.randomUUID());
+      payload.setCantidad(cantidad);
+      payload.setPrecioUnitarioClp(19990L);
+
+      mockMvc.perform(post("/carrito/items")
+              .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
+              .contentType(MediaType.APPLICATION_JSON)
+              .content(objectMapper.writeValueAsString(payload)))
+          .andExpect(status().isBadRequest());
+    }
+
+    verify(itemRepository, never()).save(any(CarritoItem.class));
+    assertThat(events.stream(InteraccionEvent.class)).isEmpty();
+  }
+
+  @Test
+  void actualizarItemNoPermiteCambiarProducto() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    CarritoItem existente = item(carrito.getId());
+    UUID productoOriginal = existente.getProductoId();
+    when(itemRepository.findByIdAndCarritoId(existente.getId(), carrito.getId()))
+        .thenReturn(Optional.of(existente));
+
+    CarritoItem payload = new CarritoItem();
+    payload.setProductoId(UUID.randomUUID());
+    payload.setCantidad(1);
+    payload.setPrecioUnitarioClp(1L);
+
+    mockMvc.perform(put("/carrito/items/{id}", existente.getId())
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(payload)))
+        .andExpect(status().isBadRequest());
+
+    verify(itemRepository, never()).save(any(CarritoItem.class));
+    assertThat(existente.getProductoId()).isEqualTo(productoOriginal);
+    assertThat(existente.getCantidad()).isEqualTo(2);
+  }
+
+  @Test
+  void actualizarItemUsaPrecioCanonicoYValidaStock() throws Exception {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    CarritoItem existente = item(carrito.getId());
+    when(itemRepository.findByIdAndCarritoId(existente.getId(), carrito.getId()))
+        .thenReturn(Optional.of(existente));
+    when(itemRepository.save(any(CarritoItem.class))).thenAnswer(inv -> inv.getArgument(0));
+    catalogo(existente.getProductoId(), 19990L, 3);
+
+    CarritoItem payload = new CarritoItem();
+    payload.setProductoId(existente.getProductoId());
+    payload.setCantidad(1);
+    payload.setPrecioUnitarioClp(1L);
+
+    mockMvc.perform(put("/carrito/items/{id}", existente.getId())
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(payload)))
+        .andExpect(status().isOk());
+
+    ArgumentCaptor<CarritoItem> captor = ArgumentCaptor.forClass(CarritoItem.class);
+    verify(itemRepository).save(captor.capture());
+    assertThat(captor.getValue().getPrecioUnitarioClp()).isEqualTo(19990L);
+    assertThat(captor.getValue().getProductoId()).isEqualTo(existente.getProductoId());
+
+    payload.setCantidad(4);
+    mockMvc.perform(put("/carrito/items/{id}", existente.getId())
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123")).authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite")))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(payload)))
+        .andExpect(status().isConflict());
+
+    verify(itemRepository, org.mockito.Mockito.times(1)).save(any(CarritoItem.class));
+  }
+
+  private void prepararCheckout(CarritoItem... items) {
+    Carrito carrito = carrito("oid-123");
+    when(carritoRepository.findByUsuarioId("oid-123")).thenReturn(Optional.of(carrito));
+    when(itemRepository.findByCarritoId(carrito.getId())).thenReturn(List.of(items));
+  }
+
+  @Test
+  void checkoutRechazaProductoSinStockSinVaciar() throws Exception {
+    CarritoItem ci = item(UUID.randomUUID());
+    prepararCheckout(ci);
+    catalogo(ci.getProductoId(), 19990L, 0);
+
+    mockMvc.perform(post("/carrito/checkout").param("email", "comprador@mail.com")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123"))
+                .authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isConflict());
+
+    verify(ordenEventPublisher, never()).publicarOrdenCreada(any());
+    verify(itemRepository, never()).deleteAll(any());
+    assertThat(events.stream(InteraccionEvent.class)).isEmpty();
+  }
+
+  @Test
+  void checkoutRechazaCantidadMayorAlStockSinVaciar() throws Exception {
+    CarritoItem ci = item(UUID.randomUUID());
+    ci.setCantidad(4);
+    prepararCheckout(ci);
+    catalogo(ci.getProductoId(), 19990L, 3);
+
+    mockMvc.perform(post("/carrito/checkout").param("email", "comprador@mail.com")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123"))
+                .authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isConflict());
+
+    verify(ordenEventPublisher, never()).publicarOrdenCreada(any());
+    verify(itemRepository, never()).deleteAll(any());
+    assertThat(events.stream(InteraccionEvent.class)).isEmpty();
+  }
+
+  @Test
+  void checkoutValidaStockAgregadoDeLineasDuplicadas() throws Exception {
+    CarritoItem primera = item(UUID.randomUUID());
+    primera.setCantidad(2);
+    CarritoItem segunda = item(primera.getCarritoId());
+    segunda.setProductoId(primera.getProductoId());
+    segunda.setCantidad(2);
+    prepararCheckout(primera, segunda);
+    catalogo(primera.getProductoId(), 19990L, 3);
+
+    mockMvc.perform(post("/carrito/checkout").param("email", "comprador@mail.com")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123"))
+                .authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isConflict());
+
+    verify(ordenEventPublisher, never()).publicarOrdenCreada(any());
+    verify(itemRepository, never()).deleteAll(any());
+    assertThat(events.stream(InteraccionEvent.class)).isEmpty();
+  }
+
+  @Test
+  void checkoutConsultaUnaVezCadaProducto() throws Exception {
+    CarritoItem primera = item(UUID.randomUUID());
+    primera.setCantidad(1);
+    CarritoItem segunda = item(primera.getCarritoId());
+    segunda.setProductoId(primera.getProductoId());
+    segunda.setCantidad(1);
+    prepararCheckout(primera, segunda);
+    catalogo(primera.getProductoId(), 19990L, 3);
+
+    mockMvc.perform(post("/carrito/checkout").param("email", "comprador@mail.com")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123"))
+                .authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.totalClp").value(39980));
+
+    verify(catalogoPrecios, org.mockito.Mockito.times(1)).consultar(primera.getProductoId());
+  }
+
+  @Test
+  void checkoutDetectaDesbordeMonetarioSinVaciar() throws Exception {
+    CarritoItem ci = item(UUID.randomUUID());
+    ci.setCantidad(2);
+    prepararCheckout(ci);
+    catalogo(ci.getProductoId(), Long.MAX_VALUE, 3);
+
+    mockMvc.perform(post("/carrito/checkout").param("email", "comprador@mail.com")
+            .with(jwt().jwt(j -> j.claim("oid", "oid-123"))
+                .authorities(new SimpleGrantedAuthority("SCOPE_Carrito.ReadWrite"))))
+        .andExpect(status().isBadRequest());
+
+    verify(ordenEventPublisher, never()).publicarOrdenCreada(any());
+    verify(itemRepository, never()).deleteAll(any());
+    assertThat(events.stream(InteraccionEvent.class)).isEmpty();
   }
 }

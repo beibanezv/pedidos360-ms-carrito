@@ -22,13 +22,14 @@ public class CatalogoPrecios {
     catalogo = RestClient.builder().baseUrl(url).requestFactory(timeouts).build();
   }
 
-  public long precio(UUID id) {
+  public Producto consultar(UUID id) {
     try {
       var producto = catalogo.get().uri("/productos/{id}", id).retrieve().body(Producto.class);
-      if (producto == null || !id.equals(producto.id()) || producto.precioClp() == null || producto.precioClp() <= 0) {
+      if (producto == null || !id.equals(producto.id()) || producto.precioClp() == null || producto.precioClp() <= 0
+          || producto.stock() == null || producto.stock() < 0) {
         throw noDisponible();
       }
-      return producto.precioClp();
+      return producto;
     } catch (RestClientResponseException ex) {
       if (ex.getStatusCode() == HttpStatus.NOT_FOUND) {
         throw new ResponseStatusException(HttpStatus.CONFLICT, "Un producto ya no está disponible");
@@ -44,5 +45,5 @@ public class CatalogoPrecios {
   }
 
   @JsonIgnoreProperties(ignoreUnknown = true)
-  record Producto(UUID id, Long precioClp) {}
+  public record Producto(UUID id, Long precioClp, Integer stock) {}
 }
