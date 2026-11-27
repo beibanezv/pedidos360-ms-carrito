@@ -1,8 +1,11 @@
 package com.pedidos360.carrito.config;
 
+import com.nimbusds.jwt.JWTParser;
+import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -12,9 +15,12 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.jwt.BadJwtException;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtClaimValidator;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.JwtException;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
@@ -34,8 +40,17 @@ public class SecurityConfig {
   @Value("${azure.tenant-id:common}")
   private String tenantId;
 
+  @Value("${azure.audience:api://446c57cb-aba2-4b7a-ab01-6f2e6af7d35c}")
+  private String azureAudience;
+
   @Value("${cognito.jwks-uri:https://cognito-idp.us-east-1.amazonaws.com/us-east-1_A8lrPsDta/.well-known/jwks.json}")
   private String cognitoJwksUri;
+
+  @Value("${cognito.issuer:}")
+  private String cognitoIssuer;
+
+  @Value("${cognito.client-id:2ba1fjeai3c2i77sb5dpd7j91m}")
+  private String cognitoClientId;
 
   @Value("${cors.allowed-origins:http://localhost:4200}")
   private String allowedOrigins;
@@ -97,7 +112,7 @@ public class SecurityConfig {
     CorsConfiguration config = new CorsConfiguration();
     config.setAllowedOrigins(List.of(allowedOrigins.split(",")));
     config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-    config.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+    config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key"));
     UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
     source.registerCorsConfiguration("/**", config);
     return source;
@@ -105,30 +120,59 @@ public class SecurityConfig {
 
   @Bean
   public JwtDecoder jwtDecoder() {
-    // SIMPLIFICADO: el access token real es ver 1.0 (iss sts.windows.net/<tid>/),
-    // por eso se usa el JWKS v1: issuerUri + tenantId + "/discovery/keys".
-    // Sin tenant real ('common') no hay fetch en startup: sin token -> 401 sin tocar red.
-    // Con tenant real valida firma contra JWKS de Azure.
-    // Segundo emisor (Cognito): se prueba Azure primero porque sostiene la
-    // evaluación 1; si la firma no calza ahí se intenta con el JWKS del pool.
-    // El JWKS solo se descarga al validar el primer token de cada emisor.
+    String tid = obligatorio(tenantId, "AZURE_TENANT_ID");
+    String audienciaAzure = obligatorio(azureAudience, "AZURE_AUDIENCE");
+    String jwksCognito = obligatorio(cognitoJwksUri, "COGNITO_JWKS_URI");
+    String clienteCognito = obligatorio(cognitoClientId, "COGNITO_CLIENT_ID");
+    String emisorCognito = (cognitoIssuer == null || cognitoIssuer.isBlank())
+        ? issuerDesdeJwks(jwksCognito) : cognitoIssuer.trim();
+    String emisorAzure = "https://sts.windows.net/" + tid + "/";
+
     String base = (issuerUri != null && !issuerUri.isBlank())
-        ? issuerUri.trim()
-        : "https://login.microsoftonline.com/";
+        ? issuerUri.trim() : "https://login.microsoftonline.com/";
     if (!base.endsWith("/")) {
       base += "/";
     }
-    String tid = (tenantId != null && !tenantId.isBlank()) ? tenantId.trim() : "common";
-    NimbusJwtDecoder azure = NimbusJwtDecoder.withJwkSetUri(base + tid + "/discovery/keys").build();
-    NimbusJwtDecoder cognito = NimbusJwtDecoder.withJwkSetUri(cognitoJwksUri.trim()).build();
-    return token -> decodeDual(azure, cognito, token);
+    // Los JWKS se descargan solo al decodificar el primer token de cada emisor.
+    Map<String, JwtDecoder> decoders = Map.of(
+        emisorAzure, decoder(emisorAzure, base + tid + "/discovery/keys", audienciaAzure, false),
+        emisorCognito, decoder(emisorCognito, jwksCognito, clienteCognito, true));
+
+    return token -> {
+      try {
+        // El iss sin verificar solo elige entre dos decoders preconfigurados.
+        String iss = JWTParser.parse(token).getJWTClaimsSet().getIssuer();
+        JwtDecoder elegido = iss == null ? null : decoders.get(iss);
+        if (elegido == null) throw new BadJwtException("Emisor no permitido");
+        return elegido.decode(token);
+      } catch (ParseException e) {
+        throw new BadJwtException("JWT malformado", e);
+      }
+    };
   }
 
-  static Jwt decodeDual(JwtDecoder primario, JwtDecoder respaldo, String token) {
-    try {
-      return primario.decode(token);
-    } catch (JwtException e) {
-      return respaldo.decode(token);
+  private static String obligatorio(String valor, String nombre) {
+    if (valor == null || valor.isBlank()) {
+      throw new IllegalStateException("Configuración JWT obligatoria vacía: " + nombre);
     }
+    return valor.trim();
+  }
+
+  private static String issuerDesdeJwks(String jwks) {
+    String sufijo = "/.well-known/jwks.json";
+    if (!jwks.endsWith(sufijo)) {
+      throw new IllegalStateException("COGNITO_ISSUER requerido: COGNITO_JWKS_URI no termina en " + sufijo);
+    }
+    return jwks.substring(0, jwks.length() - sufijo.length());
+  }
+
+  private static JwtDecoder decoder(String issuer, String jwks, String audience, boolean cognito) {
+    NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwks).build();
+    decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+        JwtValidators.createDefaultWithIssuer(issuer),
+        new JwtClaimValidator<List<String>>("aud", aud -> aud != null && aud.contains(audience)),
+        new JwtClaimValidator<Object>("exp", exp -> exp != null),
+        new JwtClaimValidator<String>("token_use", use -> !cognito || "id".equals(use))));
+    return decoder;
   }
 }

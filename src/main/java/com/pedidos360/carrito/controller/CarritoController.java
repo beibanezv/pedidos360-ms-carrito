@@ -1,8 +1,7 @@
 package com.pedidos360.carrito.controller;
 
-import com.pedidos360.carrito.messaging.OrdenCreadaEvent;
+import com.pedidos360.carrito.checkout.CheckoutService;
 import com.pedidos360.carrito.messaging.InteraccionEvent;
-import com.pedidos360.carrito.messaging.OrdenEventPublisher;
 import com.pedidos360.carrito.model.Carrito;
 import com.pedidos360.carrito.model.CarritoItem;
 import com.pedidos360.carrito.repository.CarritoItemRepository;
@@ -22,6 +21,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -37,15 +37,15 @@ public class CarritoController {
 
   private final CarritoRepository carritoRepository;
   private final CarritoItemRepository itemRepository;
-  private final OrdenEventPublisher ordenEventPublisher;
+  private final CheckoutService checkoutService;
   private final ApplicationEventPublisher events;
   private final CatalogoPrecios catalogoPrecios;
 
   public CarritoController(CarritoRepository carritoRepository, CarritoItemRepository itemRepository,
-      OrdenEventPublisher ordenEventPublisher, ApplicationEventPublisher events, CatalogoPrecios catalogoPrecios) {
+      CheckoutService checkoutService, ApplicationEventPublisher events, CatalogoPrecios catalogoPrecios) {
     this.carritoRepository = carritoRepository;
     this.itemRepository = itemRepository;
-    this.ordenEventPublisher = ordenEventPublisher;
+    this.checkoutService = checkoutService;
     this.events = events;
     this.catalogoPrecios = catalogoPrecios;
   }
@@ -78,6 +78,15 @@ public class CarritoController {
         .orElseGet(() -> carritoRepository.save(new Carrito(usuarioId)));
   }
 
+  private CatalogoPrecios.Producto validarCantidad(UUID productoId, int cantidad) {
+    if (cantidad <= 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cantidad inválida");
+    CatalogoPrecios.Producto producto = catalogoPrecios.consultar(productoId);
+    if (cantidad > producto.stock()) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "Stock insuficiente");
+    }
+    return producto;
+  }
+
   // Todos requieren JWT (ver SecurityConfig). Escritura además requiere scope.
   @GetMapping
   public Map<String, Object> obtenerCarrito(@AuthenticationPrincipal Jwt jwt) {
@@ -102,15 +111,29 @@ public class CarritoController {
     Optional<CarritoItem> existente = (body.getProductoId() != null)
         ? itemRepository.findByCarritoIdAndProductoId(carrito.getId(), body.getProductoId())
         : Optional.empty();
-    if (existente.isPresent()) {
-      CarritoItem item = existente.get();
-      item.setCantidad(item.getCantidad() + body.getCantidad());
+    CarritoItem item = existente.orElse(null);
+    int cantidadFinal;
+    if (item != null) {
+      try {
+        cantidadFinal = Math.addExact(item.getCantidad(), body.getCantidad());
+      } catch (ArithmeticException ex) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cantidad fuera de rango");
+      }
+    } else {
+      cantidadFinal = body.getCantidad();
+    }
+    CatalogoPrecios.Producto producto = validarCantidad(
+        item == null ? body.getProductoId() : item.getProductoId(), cantidadFinal);
+    if (item != null) {
+      item.setCantidad(cantidadFinal);
+      item.setPrecioUnitarioClp(producto.precioClp());
       CarritoItem guardado = itemRepository.save(item);
       registrar(usuarioId, InteraccionEvent.Tipo.AGREGAR_CARRITO, item.getProductoId());
       return ResponseEntity.ok(guardado);
     }
     body.setId(null);
     body.setCarritoId(carrito.getId());
+    body.setPrecioUnitarioClp(producto.precioClp());
     CarritoItem guardado = itemRepository.save(body);
     registrar(usuarioId, InteraccionEvent.Tipo.AGREGAR_CARRITO, body.getProductoId());
     return ResponseEntity.status(HttpStatus.CREATED).body(guardado);
@@ -123,9 +146,12 @@ public class CarritoController {
     Carrito carrito = getOrCreateCarrito(usuarioId);
     CarritoItem existente = itemRepository.findByIdAndCarritoId(id, carrito.getId())
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item no encontrado"));
+    if (body.getProductoId() != null && !body.getProductoId().equals(existente.getProductoId())) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No se puede cambiar el producto de la línea");
+    }
+    CatalogoPrecios.Producto producto = validarCantidad(existente.getProductoId(), body.getCantidad());
     existente.setCantidad(body.getCantidad());
-    if (body.getPrecioUnitarioClp() != null) existente.setPrecioUnitarioClp(body.getPrecioUnitarioClp());
-    if (body.getProductoId() != null) existente.setProductoId(body.getProductoId());
+    existente.setPrecioUnitarioClp(producto.precioClp());
     return itemRepository.save(existente);
   }
 
@@ -145,7 +171,8 @@ public class CarritoController {
   @PreAuthorize("hasAuthority('SCOPE_Carrito.ReadWrite') or hasRole('Cliente') or hasRole('Admin')")
   public Map<String, Object> checkout(@AuthenticationPrincipal Jwt jwt,
       @RequestParam(required = false) String codigoCupon,
-      @RequestParam(required = false) String email) {
+      @RequestParam(required = false) String email,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
     String usuarioId = userIdFrom(jwt);
     // SIMPLIFICADO: las cuentas corporativas de Azure no siempre traen email
     // en el token; como cualquier tienda real, se lo pedimos al comprador en
@@ -157,42 +184,17 @@ public class CarritoController {
     } else if (!emailComprador.matches(".+@.+\\..+")) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email inválido");
     }
-    Carrito carrito = getOrCreateCarrito(usuarioId);
-    List<CarritoItem> items = itemRepository.findByCarritoId(carrito.getId());
-    if (items.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Carrito vacío");
-    List<OrdenCreadaEvent.Item> itemsEvento = items.stream()
-        .map(i -> new OrdenCreadaEvent.Item(i.getProductoId(), i.getCantidad(), catalogoPrecios.precio(i.getProductoId())))
-        .toList();
-    long total;
-    try {
-      total = itemsEvento.stream().mapToLong(i -> Math.multiplyExact(i.precioUnitarioClp(), i.cantidad()))
-          .reduce(0L, Math::addExact);
-    } catch (ArithmeticException ex) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Total de carrito fuera de rango");
+    CheckoutService.validarClave(idempotencyKey);
+    CheckoutService.Result resultado = checkoutService.checkout(
+        usuarioId, emailComprador, codigoCupon, idempotencyKey);
+    // Telemetría solo si la operación es nueva: un replay no es una compra nueva.
+    if (resultado.nueva()) {
+      if (codigoCupon != null && !codigoCupon.isBlank()) {
+        registrar(usuarioId, InteraccionEvent.Tipo.CUPON_INGRESADO, null);
+      }
+      registrar(usuarioId, InteraccionEvent.Tipo.ENVIO_CONFIRMADO, null);
     }
-    // Publica ANTES de vaciar: si el broker falla (503), el carrito sigue
-    // intacto y el cliente puede reintentar sin perder su compra.
-    // SIMPLIFICADO: sin tabla de outbox; si el proceso muere entre el
-    // publish y el deleteAll, un reintento del cliente duplicaría el evento.
-    // Upgrade: outbox transaccional o clave de idempotencia por ordenId.
-    UUID ordenId = UUID.randomUUID();
-    ordenEventPublisher.publicarOrdenCreada(new OrdenCreadaEvent(ordenId, usuarioId, emailComprador,
-        itemsEvento, total, codigoCupon));
-    itemRepository.deleteAll(items);
-    if (codigoCupon != null && !codigoCupon.isBlank()) {
-      registrar(usuarioId, InteraccionEvent.Tipo.CUPON_INGRESADO, null);
-    }
-    registrar(usuarioId, InteraccionEvent.Tipo.ENVIO_CONFIRMADO, null);
-    Map<String, Object> resp = new HashMap<>();
-    resp.put("ordenId", ordenId);
-    resp.put("codigoCupon", codigoCupon);
-    resp.put("carritoId", carrito.getId());
-    resp.put("usuarioId", usuarioId);
-    resp.put("emailComprador", emailComprador);
-    resp.put("itemsComprados", items.size());
-    resp.put("totalClp", total);
-    resp.put("estado", "checkout_ok");
-    return resp;
+    return resultado.respuesta();
   }
 
   private void registrar(String usuario, InteraccionEvent.Tipo tipo, UUID productoId) {
