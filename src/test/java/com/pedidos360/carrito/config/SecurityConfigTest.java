@@ -29,11 +29,13 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.cors.CorsConfiguration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -84,6 +86,7 @@ class SecurityConfigTest {
     configurar("cognitoJwksUri", jwksCognito);
     configurar("cognitoIssuer", "");
     configurar("cognitoClientId", COGNITO_CLIENT);
+    configurar("allowedOrigins", "http://localhost:4200");
   }
 
   @AfterEach
@@ -300,6 +303,15 @@ class SecurityConfigTest {
     config.jwtDecoder();
 
     assertEquals(0, peticiones.get()); // sin token no se descarga ningun JWKS
+  }
+
+  @Test
+  void preflightIncluyeIdempotencyKeyEnAllowHeaders() {
+    CorsConfiguration cors = config.corsConfigurationSource()
+        .getCorsConfiguration(new MockHttpServletRequest("OPTIONS", "/carrito/checkout"));
+
+    assertTrue(cors.getAllowedHeaders().contains("Idempotency-Key"));
+    assertTrue(cors.getAllowedHeaders().contains("Authorization"));
   }
 
   @Test
